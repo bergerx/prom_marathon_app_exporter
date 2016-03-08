@@ -3,12 +3,13 @@ FROM debian:jessie
 ENV PYTHONUNBUFFERED true
 ENV DEBIAN_FRONTEND noninteractive
 ENV PROCESSES=1
-ENV MARATHON_METRICS_URL=http://leader.mesos:8080/metrics
+ENV MARATHON_URL=http://leader.mesos:8080/
 
 RUN apt-get update && \
   apt-get --yes --no-install-recommends install \
     nginx \
     gcc \
+    git \
     python2.7 \
     python-dev \
     python-setuptools \
@@ -18,8 +19,8 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 RUN pip install uwsgi
 
-COPY . /prom_marathon_exporter
-RUN pip install -r /prom_marathon_exporter/requirements.txt
+COPY . /prom_marathon_app_exporter
+RUN pip install -r /prom_marathon_app_exporter/requirements.txt
 COPY proxy_params /etc/nginx/proxy_params
 COPY uwsgi_params /etc/nginx/uwsgi_params
 RUN rm /etc/nginx/sites-enabled/default

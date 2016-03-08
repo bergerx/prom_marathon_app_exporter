@@ -7,3 +7,4 @@ itsdangerous==0.24
 prometheus_client==0.0.13
 wsgiref==0.1.2
 requests==2.9.1
+-e git+https://github.com/bergerx/marathon-python.git#egg=Package

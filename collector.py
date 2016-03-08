@@ -1,118 +1,97 @@
-import logging
-import requests
-from prometheus_client.core import GaugeMetricFamily,\
-    CounterMetricFamily, SummaryMetricFamily
+from marathon import MarathonClient
+from marathon.util import to_snake_case
+from prometheus_client.core import GaugeMetricFamily
 
 
-LOGGER = logging.getLogger(__name__)
+class MarathonAppCollector(object):
+    APP_ATTIBUTES = (
+        "instances",
+        "cpus",
+        "mem",
+        "disk",
+        "backoffSeconds",
+        "backoffFactor",
+        "maxLaunchDelaySeconds",
+        "container.docker.privileged",
+        "container.docker.forcePullImage",
+        "healthChecks.gracePeriodSeconds",
+        "healthChecks.intervalSeconds",
+        "healthChecks.maxConsecutiveFailures",
+        "healthChecks.timeoutSeconds",
+        "upgradeStrategy.minimumHealthCapacity",
+        "upgradeStrategy.maximumOverCapacity",
+        "tasksStaged",
+        "tasksRunning",
+        "tasksHealthy",
+        "tasksUnhealthy",
+        "taskStats.startedAfterLastScaling.stats.counts.staged",
+        "taskStats.startedAfterLastScaling.stats.counts.running",
+        "taskStats.startedAfterLastScaling.stats.counts.healthy",
+        "taskStats.startedAfterLastScaling.stats.lifeTime.averageSeconds",
+        "taskStats.startedAfterLastScaling.stats.lifeTime.medianSeconds",
+        "taskStats.withLatestConfig.stats.counts.staged",
+        "taskStats.withLatestConfig.stats.counts.running",
+        "taskStats.withLatestConfig.stats.counts.healthy",
+        "taskStats.withLatestConfig.stats.lifeTime.averageSeconds",
+        "taskStats.withLatestConfig.stats.lifeTime.medianSeconds",
+        "taskStats.totalSummary.stats.counts.staged",
+        "taskStats.totalSummary.stats.counts.running",
+        "taskStats.totalSummary.stats.counts.healthy",
+        "taskStats.totalSummary.stats.lifeTime.averageSeconds",
+        "taskStats.totalSummary.stats.lifeTime.medianSeconds",
+    )
+    QUEUE_ATTRIBUTES = (
+        "count",
+        "delay.overdue",
+        "delay.timeLeftSeconds",
+    )
 
-
-class SummaryWithQuantileMetricFamily(SummaryMetricFamily):
-
-    def add_quantile(self, quantile, value):
-        self.samples.append((self.name, {'quantile': quantile}, value))
-
-
-class MarathonCollector(object):
-
-    def __init__(self, marathon_metrics_url=None):
-        self.marathon_metrics_url = marathon_metrics_url
+    def __init__(self, marathon_url=None):
+        self.client = MarathonClient(marathon_url)
 
     def collect(self):
-        marathon_metrics_all = self.get_marathon_metrics()
-        for metric_type, marathon_metrics in marathon_metrics_all.iteritems():
-            if metric_type == 'version':
-                continue
-            for marathon_key, marathon_metric in marathon_metrics.iteritems():
-                if metric_type == 'gauges':
-                    yield self.convert_gauge_metric(marathon_key, marathon_metric)
-                elif metric_type == 'counters':
-                    yield self.convert_counter_metric(marathon_key, marathon_metric)
-                elif metric_type == 'histograms':
-                    yield self.convert_histogram_metric(marathon_key, marathon_metric)
-                elif metric_type == 'meters':
-                    yield self.convert_meter_metric(marathon_key, marathon_metric)
-                    yield self.convert_counter_metric(marathon_key+'_count', marathon_metric)
-                elif metric_type == 'timers':
-                    for converted_metric in self.convert_timer_metric(
-                            marathon_key, marathon_metric):
-                        yield converted_metric
-                else:
-                    LOGGER.warn(
-                            'Unexpected metric type from marathon: %s',
-                            metric_type)
-
-    def get_marathon_metrics(self):
-        headers = {'Content-Type': 'application/json'}
-        connection = requests.get(self.marathon_metrics_url, headers=headers)
-        if connection.status_code == 200:
-            marathon_metrics = connection.json()
-            return marathon_metrics
-        else:
-            LOGGER.warn()
-            return {}
-
-    @staticmethod
-    def convert_metric_key(marathon_key):
-        key = 'marathon_%s' % marathon_key
-        key = key.lower().replace('.', '_').replace('-', '_').replace('$', '_')
-        return key
+        result_dict = {}
+        apps = self.client.list_apps(embed_task_stats=True)
+        for app_attribute in self.APP_ATTIBUTES:
+            metric_family = GaugeMetricFamily(
+                self.get_metric_key(app_attribute, 'apps'),
+                documentation='from v2/apps?embed=apps.taskStats value of %s' % app_attribute,
+                labels=["id"])
+            for app in apps:
+                labels = [app.id]
+                value = self.get_metric_value(app_attribute, app)
+                if value is None:
+                    continue
+                metric_family.add_metric(labels, value)
+            yield metric_family
+        queue = self.client.list_queue()
+        for queue_attribute in self.QUEUE_ATTRIBUTES:
+            metric_family = GaugeMetricFamily(
+                self.get_metric_key(queue_attribute, 'queue'),
+                documentation='from v2/queue value of %s' % queue_attribute,
+                labels=["id"])
+            for queue_item in queue:
+                labels = [queue_item.app.id]
+                value = self.get_metric_value(queue_attribute, queue_item)
+                if value is None:
+                    continue
+                metric_family.add_metric(labels, value)
+            yield metric_family
 
     @classmethod
-    def convert_gauge_metric(cls, marathon_key, marathon_metric):
-        metric_key = cls.convert_metric_key(marathon_key)
-        return GaugeMetricFamily(
-            name=metric_key,
-            documentation='from %s' % marathon_key,
-            value=marathon_metric['value']
-        )
+    def get_metric_value(cls, key, obj):
+        if '.' in key:
+            key_current, key_rest = key.split('.', 1)
+            sub_obj = getattr(obj, to_snake_case(key_current), None)
+            if sub_obj is None:
+                return None
+            return cls.get_metric_value(key_rest, sub_obj)
+        return getattr(obj, to_snake_case(key), None)
 
     @classmethod
-    def convert_counter_metric(cls, marathon_key, marathon_metric):
-        metric_key = cls.convert_metric_key(marathon_key)
-        c = CounterMetricFamily(
-                name=metric_key,
-                documentation='from %s' % marathon_key,
-                value=marathon_metric['count'])
-        return c
+    def get_metric_key(cls, key, obj_type):
+        return "marathon_%s_%s" % (obj_type, key.replace('.', '_'))
 
     @classmethod
-    def convert_histogram_metric(cls, marathon_key, marathon_metric):
-        metric_key = cls.convert_metric_key(marathon_key)
-        count = int(marathon_metric['count'])
-        sum = count * float(marathon_metric['mean'])
-        s = SummaryWithQuantileMetricFamily(
-            name=metric_key,
-            documentation='from %s' % marathon_key,
-            count_value=count,
-            sum_value=sum,
-        )
-        for key, value in marathon_metric.iteritems():
-            if key.startswith('p'):
-                quantile = float('0.%s' % key[1:])
-                s.add_quantile(
-                   quantile=str(quantile),
-                   value=value,
-                )
-        return s
-
-    @classmethod
-    def convert_meter_metric(cls, marathon_key, marathon_metric):
-        metric_key = cls.convert_metric_key(marathon_key)
-        metric_key = '%s_rate' % metric_key
-        g = GaugeMetricFamily(
-            name=metric_key,
-            documentation='from %s' % marathon_key,
-            labels=('window',))
-        g.add_metric(('1m',), marathon_metric['m1_rate'])
-        g.add_metric(('5m',), marathon_metric['m5_rate'])
-        g.add_metric(('15m',), marathon_metric['m15_rate'])
-        g.add_metric(('mean',), marathon_metric['mean_rate'])
-        return g
-
-    @classmethod
-    def convert_timer_metric(cls, marathon_key, marathon_metric):
-        meter_part = cls.convert_meter_metric(
-                marathon_key, marathon_metric)
-        histogram_part = cls.convert_histogram_metric(marathon_key, marathon_metric)
-        return meter_part, histogram_part
+    def generate_metric(cls, key, obj, obj_type, labels, value):
+        return metric_family
