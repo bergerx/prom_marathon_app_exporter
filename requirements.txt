@@ -7,4 +7,4 @@ itsdangerous==0.24
 prometheus_client==0.0.13
 wsgiref==0.1.2
 requests==2.9.1
-marathon==0.8.6
+marathon==0.9.0
